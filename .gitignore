@@ -1,0 +1,9 @@
+*.pt
+*.pth
+wandb/
+*.lock
+__pycache__/
+*.toml
+.env
+.vscode/
+.python-version
