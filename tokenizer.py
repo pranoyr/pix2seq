@@ -2,13 +2,15 @@ import numpy as np
 import torch
 
 class Pix2SeqTokenizer:
-    def __init__(self, num_bins=1000, class_names=None):
+    def __init__(self, num_bins=1000):
         """
         Args:
             num_bins: Resolution for coordinates (e.g., 1000 bins = 224px / 1000 is sub-pixel precision).
             class_names: List of strings for classes (e.g., COCO classes).
         """
         self.num_bins = num_bins
+
+        class_names = coco_classes
         
         # 1. Define Special Tokens
         self.specials = ['<PAD>', '<BOS>', '<EOS>', '<UNK>']
@@ -52,6 +54,13 @@ class Pix2SeqTokenizer:
             idx = self.class_start_id + i
             self.stoi[name] = idx
             self.itos[idx] = name
+
+
+        # print(self.stoi)
+        # print("-----")
+        # print(self.itos)
+        # exit()
+
             
         self.vocab_size = len(self.itos)
 
@@ -162,6 +171,18 @@ class Pix2SeqTokenizer:
             classes.append(c_idx)
             
         return boxes, classes
+    
+coco_classes = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+    'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+    'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush'
+    ]
 
 # --- Integration Example ---
 
@@ -178,10 +199,12 @@ if __name__ == "__main__":
     'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
     'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
     'hair drier', 'toothbrush'
-]
+]      
+    
+    print(len(coco_classes), "classes total.")
     
     # 1. Initialize
-    tokenizer = Pix2SeqTokenizer(num_bins=1000, class_names=coco_classes)
+    tokenizer = Pix2SeqTokenizer(num_bins=1000)
     
     print(f"Vocab Size: {tokenizer.vocab_size}")
     print(f"Coord Range: {tokenizer.coord_start_id} - {tokenizer.coord_end_id}")

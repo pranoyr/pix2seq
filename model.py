@@ -13,6 +13,8 @@ from transformers import AutoModel
 import torch
 import torch.nn as nn
 from transformers import AutoModel
+from tokenizer import Pix2SeqTokenizer
+
 
 
 
@@ -24,20 +26,27 @@ class Pix2SeqModel(nn.Module):
         self.dino = AutoModel.from_pretrained(dino_model_name)
         for param in self.dino.parameters():
             param.requires_grad = False
+
+
+
+        tokenizer = Pix2SeqTokenizer(
+            num_bins=1000,
+        )
             
         dino_dim = self.dino.config.hidden_size 
         decoder_dim = 256
-        vocab_size = len(tokenizer.stoi) 
+        vocab_size = tokenizer.vocab_size
+        print(f"Vocab Size: {vocab_size}")
         max_seq_len = 1024 
         
-        self.pad_token_id = tokenizer.stoi['<PAD>']
+        self.pad_token_id = tokenizer.pad_id
         
         # 2. Projector
         self.projector = nn.Linear(dino_dim, decoder_dim)
         
         # 3. Transformer Decoder
-        decoder_layer = nn.TransformerDecoderLayer(d_model=decoder_dim, nhead=4, batch_first=True)
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=4)
+        decoder_layer = nn.TransformerDecoderLayer(d_model=decoder_dim, nhead=8, batch_first=True)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
         
         # 4. Embeddings
         self.token_embedding = nn.Embedding(vocab_size, decoder_dim)
@@ -48,9 +57,9 @@ class Pix2SeqModel(nn.Module):
 
 
         # Store special tokens for generation
-        self.pad_token_id = tokenizer.stoi['<PAD>']
-        self.bos_token_id = tokenizer.stoi['<BOS>'] # Needed for starting generation
-        self.eos_token_id = tokenizer.stoi['<EOS>'] # Needed for stopping
+        self.pad_token_id = tokenizer.pad_id
+        self.bos_token_id = tokenizer.bos_id
+        self.eos_token_id = tokenizer.eos_id
         
         # 6. Loss Function (Internal)
         # ignore_index is crucial so we don't calculate loss on padding
@@ -74,7 +83,7 @@ class Pix2SeqModel(nn.Module):
             
         # --- B. Project ---
         memory = self.projector(visual_feats)
-        
+
         # --- C. Handle Training vs Inference ---
         if target_tokens is not None:
             # === TRAINING MODE ===
