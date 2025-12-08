@@ -14,6 +14,58 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 from tokenizer import Pix2SeqTokenizer
+import math
+
+
+class PositionEmbeddingSine(nn.Module):
+    def __init__(self, num_pos_feats=64, temperature=10000, normalize=True):
+        super().__init__()
+        self.num_pos_feats = num_pos_feats
+        self.temperature = temperature
+        self.normalize = normalize
+        self.scale = 2 * math.pi
+
+    def forward(self, x, h=None, w=None):
+        """
+        x: [Batch, SeqLen, Dim]
+        h, w: Grid dimensions (Height, Width) of the features
+        """
+        b, seq_len, dim = x.shape
+        
+        # Fallback to sqrt if dimensions not provided (only works for squares)
+        if h is None or w is None:
+            h = w = int(math.sqrt(seq_len))
+            
+        # Safety Check
+        if h * w != seq_len:
+            raise ValueError(f"Feature grid {h}x{w} ({h*w}) does not match sequence length {seq_len}!")
+        
+        # 1. Create Grid Mask
+        mask = torch.ones((b, h, w), device=x.device)
+        
+        # 2. Cumulative Sum
+        y_embed = mask.cumsum(1, dtype=torch.float32)
+        x_embed = mask.cumsum(2, dtype=torch.float32)
+        
+        # 3. Normalize
+        if self.normalize:
+            eps = 1e-6
+            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
+            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
+
+        # 4. Generate Sine/Cosine
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        
+        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        
+        # 5. Concatenate and Flatten
+        pos = torch.cat((pos_y, pos_x), dim=3)
+        return pos.flatten(1, 2)
 
 
 
@@ -26,6 +78,7 @@ class Pix2SeqModel(nn.Module):
         self.dino = AutoModel.from_pretrained(dino_model_name)
         for param in self.dino.parameters():
             param.requires_grad = False
+            
 
 
 
@@ -40,6 +93,9 @@ class Pix2SeqModel(nn.Module):
         max_seq_len = 1024 
         
         self.pad_token_id = tokenizer.pad_id
+
+
+        self.pos_embed = PositionEmbeddingSine(num_pos_feats=decoder_dim // 2, normalize=True)
         
         # 2. Projector
         self.projector = nn.Linear(dino_dim, decoder_dim)
@@ -75,6 +131,13 @@ class Pix2SeqModel(nn.Module):
             (loss, logits) if target_tokens is provided
             (logits) if target_tokens is None (Inference mode)
         """
+
+        B, C, H, W = image.shape
+        
+        # DINOv2 Base patch size is 14
+        patch_size = 14
+        h_feat = H // patch_size
+        w_feat = W // patch_size
         
         # --- A. Vision Encoder ---
         with torch.no_grad():
@@ -83,6 +146,13 @@ class Pix2SeqModel(nn.Module):
             
         # --- B. Project ---
         memory = self.projector(visual_feats)
+
+        # Generate positional embeddings based on the shape of memory
+        # pos shape: [Batch, 256, 256]
+        pos = self.pos_embed(memory, h=h_feat, w=w_feat)
+
+        # Add to memory (broadcasts correctly)
+        memory = memory + pos
 
         # --- C. Handle Training vs Inference ---
         if target_tokens is not None:
@@ -138,11 +208,23 @@ class Pix2SeqModel(nn.Module):
         device = image.device
         batch_size = image.size(0)
 
+        # --- 1. Calculate Grid Sizes (SAME AS FORWARD) ---
+        # We need H and W to tell the positional embedding how the grid looks
+        B, C, H, W = image.shape
+        patch_size = 14 
+        h_feat = H // patch_size
+        w_feat = W // patch_size
+
         # 1. Encode Image ONCE (Memory)
         # We don't need to re-encode the image every loop
         outputs = self.dino(image)
         visual_feats = outputs.last_hidden_state[:, 1:, :] 
         memory = self.projector(visual_feats)
+
+        # --- 3. Add Positional Embeddings (CRITICAL UPDATE) ---
+        # Pass the calculated h/w dimensions so the sine waves match the image shape
+        pos = self.pos_embed(memory, h=h_feat, w=w_feat)
+        memory = memory + pos
 
         # 2. Initialize Decoder Input with <BOS> token
         # Shape: (Batch_Size, 1) -> [[1], [1], [1]...]
