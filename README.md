@@ -1,5 +1,6 @@
 # Pix2Seq: Object Detection as a Language Modeling Task
 
+![Pix2Seq Architecture](https://github.com/pranoyr/images/img.png)
 Pix2Seq is a novel framework that casts object detection as a language modeling problem. Instead of standard detection heads (like classification and regression branches), Pix2Seq uses a Transformer-based decoder to generate a sequence of tokens that represent bounding boxes and class labels.
 
 ### Key Concept
