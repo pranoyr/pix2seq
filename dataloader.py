@@ -186,7 +186,7 @@ class MultiScaleCocoDataset(CocoDetection):
     
 
 class Pix2SeqCollate:
-    def __init__(self, tokenizer, max_seq_len=512):
+    def __init__(self, tokenizer, max_seq_len=1024):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
 

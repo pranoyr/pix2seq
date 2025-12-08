@@ -294,14 +294,14 @@ def train(args):
     steps_per_epoch = math.ceil(len(train_dl) / args.gradient_accumulation_steps)
     num_training_steps = args.num_epochs * steps_per_epoch
    
-    # scheduler = get_cosine_schedule_with_warmup(
-    #         optim,
-    #         num_warmup_steps=args.warmup_steps,
-    #         num_training_steps=num_training_steps
-    #     )
+    scheduler = get_cosine_schedule_with_warmup(
+            optim,
+            num_warmup_steps=args.warmup_steps,
+            num_training_steps=num_training_steps
+        )
 
 
-    scheduler = None
+    # scheduler = None
 
     # prepare model, optimizer, and dataloader for distributed training
     model, optim, scheduler, train_dl, val_dl = accelerator.prepare(
@@ -436,7 +436,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--num_epochs', type=int, default=50, help="Number of training epochs")
     parser.add_argument('--warmup_steps', type=int, default=1000, help="LR warmup steps")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help="Max gradient norm for clipping")
     parser.add_argument('--mixed_precision', type=str, default='fp16', choices=['no', 'fp16', 'bf16'], help="Mixed precision training mode")
 
