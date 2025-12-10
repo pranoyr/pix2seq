@@ -14,6 +14,72 @@ from tokenizer import Pix2SeqTokenizer
 from torchvision.utils import draw_bounding_boxes, save_image
 
 
+import random
+import torch
+
+def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation_scale=0.2):
+    """
+    Generates noise boxes using 50% Pure Random and 50% Perturbed Real strategies.
+    
+    Args:
+        real_boxes: List of [x, y, w, h] (Absolute coordinates)
+        image_w, image_h: Dimensions of the canvas/image
+        num_noise: How many noise boxes to generate
+        perturbation_scale: How much to shift/scale real boxes (0.2 = 20%)
+        
+    Returns:
+        noise_boxes: List of [x, y, w, h]
+    """
+    noise_boxes = []
+
+    for _ in range(num_noise):
+        
+        # Strategy: 50% chance of Pure Random, 50% chance of Perturbed Real
+        use_pure_random = (len(real_boxes) == 0) or (random.random() > 0.5)
+
+        if use_pure_random:
+            # === STRATEGY 1: Pure Random Box ===
+            # Generate a box anywhere. 
+            # Min size 10px, Max size 1/2 image
+            w = random.randint(10, image_w // 2)
+            h = random.randint(10, image_h // 2)
+            x = random.randint(0, max(0, image_w - w))
+            y = random.randint(0, max(0, image_h - h))
+            noise_boxes.append([x, y, w, h])
+            
+        else:
+            # === STRATEGY 2: Perturbed Real Box (Hard Negative) ===
+            # Pick a real object and mess it up slightly
+            base_box = random.choice(real_boxes) # [x, y, w, h]
+            bx, by, bw, bh = base_box
+            
+            # 1. Random Shift (Offset)
+            # Shift center by +/- 20% of the size
+            shift_x = int(bw * perturbation_scale * random.uniform(-1, 1))
+            shift_y = int(bh * perturbation_scale * random.uniform(-1, 1))
+            
+            # 2. Random Scale (Resize)
+            # Scale size between 0.8x and 1.2x
+            scale_w = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
+            scale_h = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
+            
+            # Calculate new box
+            nw = int(bw * scale_w)
+            nh = int(bh * scale_h)
+            nx = int(bx + shift_x)
+            ny = int(by + shift_y)
+            
+            # 3. Clip to Image Boundaries (Important!)
+            nx = max(0, min(nx, image_w - 1))
+            ny = max(0, min(ny, image_h - 1))
+            nw = max(1, min(nw, image_w - nx))
+            nh = max(1, min(nh, image_h - ny))
+            
+            noise_boxes.append([nx, ny, nw, nh])
+
+    return noise_boxes
+
+
 # ==============================================================================
 # 2. Corrected Visualization Function
 # ==============================================================================
@@ -36,16 +102,20 @@ def visualize_batch(root_path):
     loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_fn)
 
     # --- 1. Get Batch (Handling Dictionary Return) ---
-    try:
-        batch = next(iter(loader))
-    except Exception as e:
-        print(f"Error fetching batch: {e}")
-        return
+
+    batch = next(iter(loader))
+   
 
     # Extract from Dictionary
     images = batch["images"]
     tokens = batch["tokens"]
     valid_sizes = batch["valid_sizes"]
+
+    masks = batch.get("loss_masks", None)
+
+    # print(masks.shape)
+    # exit()
+  
 
     print(f"Batch Padded Shape: {images.shape}")
     print(f"Valid Sizes (First 4): {valid_sizes.tolist()}")
@@ -103,21 +173,20 @@ def visualize_batch(root_path):
 
 
 
-
-# --- 1. Dataset Class (UPDATED WITH MAPPING) ---
 class MultiScaleCocoDataset(CocoDetection):
     def __init__(self, root, annFile, sizes=(320, 352, 384, 416, 448, 480), max_size=640):
         super().__init__(root, annFile)
         self.sizes = sizes
         self.max_size = max_size
-        
+
+   
         # --- NEW MAPPING LOGIC START ---
         # COCO IDs are [1, ..., 90] with gaps. 
         # We map them to [0, ..., 79]
         self.valid_ids = sorted(self.coco.getCatIds())
         self.id_to_idx = {coco_id: i for i, coco_id in enumerate(self.valid_ids)}
 
-        # --- NEW MAPPING LOGIC END ---
+        self.noise_class_id = len(self.valid_ids)
 
         self.base_transform = v2.Compose([
             v2.ToImage(),
@@ -157,7 +226,6 @@ class MultiScaleCocoDataset(CocoDetection):
             new_box = [x * scale_w, y * scale_h, w * scale_w, h * scale_h]
             boxes.append(new_box)
             
-            # --- UPDATED: USE MAPPING ---
             raw_id = obj['category_id']
             # Map 90 -> 79, etc.
             if raw_id in self.id_to_idx:
@@ -165,18 +233,43 @@ class MultiScaleCocoDataset(CocoDetection):
             else:
                 # Handle edge case if annotation has invalid ID
                 continue 
-            # -----------------------------
 
-        if len(boxes) > 0:
-            boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
-            labels_tensor = torch.tensor(labels, dtype=torch.int64)
-        else:
-            boxes_tensor = torch.zeros((0, 4), dtype=torch.float32)
-            labels_tensor = torch.zeros((0,), dtype=torch.int64)
+        MAX_OBJECTS = 30
+
+        num_real = len(boxes)
+        num_noise = MAX_OBJECTS - num_real
+
+        if num_noise < 0:
+            num_noise = 0
+        
+
+        noise_boxes = generate_noise_boxes(
+            boxes, 
+            image_w=new_w, # Use the RESIZED dimensions
+            image_h=new_h, 
+            num_noise=num_noise
+        )
+        
+        noise_labels = [self.noise_class_id] * len(noise_boxes)
+
+        all_boxes = boxes + noise_boxes
+        all_labels = labels + noise_labels
+
+        # Weights: 1.0 for Real coordinates, 0.0 for Noise coordinates
+        all_weights = [1.0] * len(boxes) + [0.0] * len(noise_boxes)
+
+        combined = list(zip(all_boxes, all_labels, all_weights))
+        random.shuffle(combined)
+        all_boxes, all_labels, all_weights = zip(*combined)
+        
+        boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
+        labels_tensor = torch.tensor(all_labels, dtype=torch.int64)
+        weights_tensor = torch.tensor(all_weights, dtype=torch.float32)
 
         target_dict = {
             "boxes": boxes_tensor,
             "labels": labels_tensor,
+            "weights": weights_tensor,
             "image_id": torch.tensor([index]),
             "orig_size": torch.tensor([h_orig, w_orig]),
             "size": torch.tensor([new_h, new_w]) 
@@ -203,6 +296,7 @@ class Pix2SeqCollate:
 
         batch_tokens = []
         targets_dicts = [item[1] for item in batch]
+        batch_masks = []  
         
         # We need to save the valid sizes for the Visualizer!
         valid_sizes = [] 
@@ -210,27 +304,47 @@ class Pix2SeqCollate:
         for t in targets_dicts:
             boxes = t['boxes'] 
             labels = t['labels']
+            weights = t['weights']
             
             # Get valid dimensions
             current_h, current_w = t['size'].tolist()
             valid_sizes.append([current_h, current_w]) # Store for later
             
-            # ✅ CORRECT: Normalize relative to the valid image content
+            # Normalize relative to the valid image content
             seq = self.tokenizer.encode(boxes, labels, (current_h, current_w))
-            batch_tokens.append(seq)
+            mask_list = [1.0] # BOS is always valid
 
-        # 2. Pad Tokens
+            # Iterate through the weights provided by Dataset
+            for w in weights:
+                val = w.item() # 1.0 or 0.0
+                
+                # Append masks for 4 Coordinates + 1 Class
+                # Coords get 'val' (0.0 if noise), Class ALWAYS gets 1.0
+                mask_list.extend([val, val, val, val, 1.0])
+                
+            mask_list.append(1.0) # EOS is always valid
+
+            batch_tokens.append(seq)
+            batch_masks.append(torch.tensor(mask_list, dtype=torch.float32))
+
+        # 2. Pad Tokens AND Masks
         max_len = max([s.size(0) for s in batch_tokens])
         max_len = min(max_len, self.max_seq_len)
-        padded_tokens = torch.full((len(batch), max_len), self.tokenizer.pad_id, dtype=torch.long)
         
-        for i, seq in enumerate(batch_tokens):
+        padded_tokens = torch.full((len(batch), max_len), self.tokenizer.pad_id, dtype=torch.long)
+        padded_masks = torch.zeros((len(batch), max_len), dtype=torch.float32) # Pad with 0.0 (Ignore)
+        
+        for i, (seq, mask) in enumerate(zip(batch_tokens, batch_masks)):
             length = min(seq.size(0), max_len)
             padded_tokens[i, :length] = seq[:length]
+            padded_masks[i, :length] = mask[:length]
         
-        # Return 3 things: Images, Tokens, and Valid Sizes
-        return {"images": padded_images, "tokens": padded_tokens, "valid_sizes": torch.tensor(valid_sizes, dtype=torch.int64)}
-    
+        return {
+            "images": padded_images, 
+            "tokens": padded_tokens, 
+            "loss_masks": padded_masks,
+            "valid_sizes": torch.tensor(valid_sizes, dtype=torch.int64)
+        }
 
 
 # --- 3. Loader Factory (Updated to return Tokenizer) ---
@@ -290,31 +404,30 @@ if __name__ == "__main__":
     
     COCO_ROOT = '/run/media/pranoy/Datasets/coco-dataset/coco/'
 
-
     visualize_batch(COCO_ROOT)
 
-    if os.path.exists(COCO_ROOT):
-        # Unpack the 3 return values
-        tokenizer = Pix2SeqTokenizer(num_bins=1000)
-        train_loader, val_loader = get_pix2seq_dataloaders(COCO_ROOT, batch_size=2, num_workers=0)
+    # if os.path.exists(COCO_ROOT):
+    #     # Unpack the 3 return values
+    #     tokenizer = Pix2SeqTokenizer(num_bins=1000)
+    #     train_loader, val_loader = get_pix2seq_dataloaders(COCO_ROOT, batch_size=2, num_workers=0)
         
-        print(f"\nTrain batches: {len(train_loader)}")
-        print(f"Tokenizer Vocab Size: {tokenizer.vocab_size}")
+    #     print(f"\nTrain batches: {len(train_loader)}")
+    #     print(f"Tokenizer Vocab Size: {tokenizer.vocab_size}")
         
-        images, tokens = next(iter(train_loader))
+    #     images, tokens = next(iter(train_loader))
         
-        print(f"Images Shape: {images.shape}")
-        print(f"Tokens Shape: {tokens.shape}")
-        print(f"Max Token ID in batch: {tokens.max().item()}")
+    #     print(f"Images Shape: {images.shape}")
+    #     print(f"Tokens Shape: {tokens.shape}")
+    #     print(f"Max Token ID in batch: {tokens.max().item()}")
 
 
 
 
         
-        # Validation Check
-        # Ensure max token ID is within bounds
-        assert tokens.max().item() < tokenizer.vocab_size, "CRITICAL: Token ID exceeds vocab size!"
-        print("Validation Successful: All tokens are within vocabulary range.")
+    #     # Validation Check
+    #     # Ensure max token ID is within bounds
+    #     assert tokens.max().item() < tokenizer.vocab_size, "CRITICAL: Token ID exceeds vocab size!"
+    #     print("Validation Successful: All tokens are within vocabulary range.")
         
-    else:
-        print(f"Path not found: {COCO_ROOT}")
+    # else:
+    #     print(f"Path not found: {COCO_ROOT}")

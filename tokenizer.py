@@ -153,6 +153,11 @@ class Pix2SeqTokenizer:
             
             # Check if tokens are actually within coordinate range
             if not (self.coord_start_id <= y1_id < self.coord_end_id): continue
+
+            c_idx = class_id - self.class_start_id
+
+            if c_idx == (self.num_classes - 1):
+                continue
             
             # Dequantize Coordinates
             y1 = self.dequantize(y1_id - self.coord_start_id)
@@ -166,8 +171,6 @@ class Pix2SeqTokenizer:
             
             boxes.append([x1, y1, w, h])
             
-            # Recover Class Index
-            c_idx = class_id - self.class_start_id
             classes.append(c_idx)
             
         return boxes, classes
@@ -181,25 +184,13 @@ coco_classes = [
     'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
     'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
     'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
-    'hair drier', 'toothbrush'
-    ]
+    'hair drier', 'toothbrush', 'background']
+
 
 # --- Integration Example ---
 
 if __name__ == "__main__":
     # Example COCO Classes (partial)
-  
-    coco_classes = [
-    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
-    'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
-    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
-    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
-    'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
-    'hair drier', 'toothbrush'
-]      
     
     print(len(coco_classes), "classes total.")
     
