@@ -80,9 +80,6 @@ def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation
     return noise_boxes
 
 
-# ==============================================================================
-# 2. Corrected Visualization Function
-# ==============================================================================
 def visualize_batch(root_path):
     print("Starting Visualization...")
     tokenizer = Pix2SeqTokenizer(num_bins=1000)
@@ -95,88 +92,77 @@ def visualize_batch(root_path):
     dataset = MultiScaleCocoDataset(
         root=train_img,
         annFile=train_ann,
-        sizes=(320, 352, 384, 416, 448, 480),
-        max_size=640
+        max_size=1024
     )
     
-    loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_fn)
-
-    # --- 1. Get Batch (Handling Dictionary Return) ---
-
+    loader = DataLoader(dataset, batch_size=4, shuffle=False, collate_fn=collate_fn)
     batch = next(iter(loader))
-   
 
-    # Extract from Dictionary
     images = batch["images"]
     tokens = batch["tokens"]
     valid_sizes = batch["valid_sizes"]
 
-    masks = batch.get("loss_masks", None)
-
-    # print(masks.shape)
-    # exit()
-  
-
     print(f"Batch Padded Shape: {images.shape}")
-    print(f"Valid Sizes (First 4): {valid_sizes.tolist()}")
     
+    # --- 1. Define Inverse Normalization Constants ---
+    # These must match the values in your Dataset __init__
+    inv_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    inv_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
     vis_images = []
 
-    # --- 2. Draw ---
     for i in range(images.size(0)):
-        
-        # Retrieve the VALID (resized) dimensions for this specific image
-        # This tells us the size of the "content" inside the padded tensor
         h_valid, w_valid = valid_sizes[i].tolist()
         
-        # Decode tokens to Normalized coordinates [0, 1]
-        boxes_norm, class_indices = tokenizer.decode(tokens[i])
+        # --- 2. De-normalize the Image ---
+        img_tensor = images[i].clone() # Clone to keep original batch intact
         
+        # Formula: original = (normalized * std) + mean
+        img_tensor = img_tensor * inv_std + inv_mean
+        
+        # Clamp to ensure values don't go below 0 or above 1 due to float precision
+        img_tensor = torch.clamp(img_tensor, 0, 1)
+
+        # Now convert to uint8
+        img_uint8 = (img_tensor * 255).to(torch.uint8)
+
+        # --- 3. Decode Tokens (Same as before) ---
+        boxes_norm, class_indices = tokenizer.decode(tokens[i])
         boxes_abs = []
         labels = []
         
         for box, cls_idx in zip(boxes_norm, class_indices):
-            # box is [x, y, w, h] normalized relative to h_valid, w_valid
-            
-            # --- CORRECT SCALING ---
-            # Multiply normalized coords by the VALID dimensions
-            # (Because tokens were normalized by valid dimensions in collate)
             x = box[0] * w_valid
             y = box[1] * h_valid
             w = box[2] * w_valid
             h = box[3] * h_valid
             
-            # Convert to [xmin, ymin, xmax, ymax]
             boxes_abs.append([x, y, x + w, y + h])
             labels.append(str(cls_idx))
 
-        # Prepare image (uint8)
-        img_uint8 = (images[i] * 255).to(torch.uint8)
         
         if len(boxes_abs) > 0:
             img_with_boxes = draw_bounding_boxes(
                 img_uint8, 
                 boxes=torch.tensor(boxes_abs), 
                 labels=labels,
-                colors="green", # Green for Ground Truth
+                colors="green", 
                 width=2
             )
             vis_images.append(img_with_boxes.float() / 255.0)
         else:
             vis_images.append(img_uint8.float() / 255.0)
 
-    # --- 3. Save ---
     grid = torchvision.utils.make_grid(vis_images, nrow=2)
     save_image(grid, "correct_dataloader_viz.png")
     print("\n✅ Saved 'correct_dataloader_viz.png'. Check this file!")
 
 
 
-
 class MultiScaleCocoDataset(CocoDetection):
-    def __init__(self, root, annFile, sizes=(320, 352, 384, 416, 448, 480), max_size=640):
+    def __init__(self, root, annFile, max_size=1024):
         super().__init__(root, annFile)
-        self.sizes = sizes
+
         self.max_size = max_size
 
    
@@ -191,25 +177,44 @@ class MultiScaleCocoDataset(CocoDetection):
         self.base_transform = v2.Compose([
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
+
     def get_target_size(self, h, w):
-        short_side_target = random.choice(self.sizes)
-        min_original_size = float(min(h, w))
-        max_original_size = float(max(h, w))
+        # 1. Random Jitter
+        scale = random.uniform(0.3, 2.0)
         
-        scale = short_side_target / min_original_size
-        if max_original_size * scale > self.max_size:
-            scale = self.max_size / max_original_size
+        # 2. Check Clamp (Safety Cap)
+        # Calculate what dimensions WOULD be
+        h_scaled = h * scale
+        w_scaled = w * scale
+        
+        # If it's too big, force it down to max_size
+        if max(h_scaled, w_scaled) > self.max_size:
+            scale = self.max_size / max(h, w)
             
+        # 3. Apply Scale
         new_h = int(h * scale)
         new_w = int(w * scale)
-        return (new_h, new_w), scale
+        
+        # 4. --- DINOv2 FIX: Snap to grid of 14 ---
+        patch_size = 14
+        new_h = int(round(new_h / patch_size) * patch_size)
+        new_w = int(round(new_w / patch_size) * patch_size)
+        
+        # Prevent collapsing to 0
+        new_h = max(new_h, patch_size)
+        new_w = max(new_w, patch_size)
+        
+        
+        return (new_h, new_w)
+
 
     def __getitem__(self, index):
         img, target = super().__getitem__(index)
         w_orig, h_orig = img.size
-        (new_h, new_w), scale = self.get_target_size(h_orig, w_orig)
+        (new_h, new_w) = self.get_target_size(h_orig, w_orig)
         
         # Resize Image
         img_tensor = self.base_transform(img)
@@ -364,14 +369,13 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
     train_dataset = MultiScaleCocoDataset(
         root=train_img,
         annFile=train_ann,
-        sizes=(320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640),
-        max_size=640
+        max_size=1024
     )
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
         pin_memory=True
@@ -381,8 +385,7 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
     val_dataset = MultiScaleCocoDataset(
         root=val_img,
         annFile=val_ann,
-        sizes=(640,), 
-        max_size=640
+        max_size=1024
     )
 
     val_loader = DataLoader(

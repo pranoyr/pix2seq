@@ -53,21 +53,35 @@ def sample_images(model, val_loader, tokenizer, accelerator, device, global_step
 
     images = batch["images"].to(device)[:num_samples]
     target_tokens = batch["tokens"].to(device)[:num_samples]
-    valid_sizes = batch["valid_sizes"][:num_samples] # Keep on CPU usually, or move to device if needed
+    valid_sizes = batch["valid_sizes"][:num_samples] 
     
     current_batch_size = images.size(0)
 
     if current_batch_size == 0:
         return
 
-    # 2. Generate Predictions (Greedy Search)
+    # 2. Generate Predictions (Greedy Search or Nucleus)
     generated_seqs = model.generate(images, max_new_tokens=100)
 
     visualizations = []
 
+    # --- PREPARE INVERSE NORMALIZATION CONSTANTS ---
+    # We move these to CPU because we pull images.cpu() inside the loop
+    inv_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    inv_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
     # 3. Iterate through samples to draw boxes
     for i in range(current_batch_size):
         img_tensor = images[i].cpu()
+
+        # --- DENORMALIZE START ---
+        # Formula: original = (normalized * std) + mean
+        img_tensor = img_tensor * inv_std + inv_mean
+        
+        # Clamp to [0, 1] range to avoid uint8 overflow/underflow artifacts
+        img_tensor = torch.clamp(img_tensor, 0, 1)
+        # --- DENORMALIZE END ---
+
         img_to_draw = (img_tensor * 255).to(torch.uint8)
         
         # Get the VALID dimensions for correct scaling
@@ -129,7 +143,6 @@ def sample_images(model, val_loader, tokenizer, accelerator, device, global_step
         accelerator.log({"val/visualizations": visualizations}, step=global_step)
 
     model.train()
-
 
 @torch.no_grad()
 def validate(model, val_loader, tokenizer, accelerator, device, global_step):
@@ -430,14 +443,14 @@ if __name__ == "__main__":
     parser.add_argument('--project_name', type=str, default='Pix2Seq', help="WandB project name")
     parser.add_argument('--root', type=str, default='/run/media/pranoy/Datasets/coco-dataset/coco/',help="Path to dataset")
     parser.add_argument('--resume', type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument('--batch_size', type=int, default=32, help="Batch size per device")
+    parser.add_argument('--batch_size', type=int, default=8, help="Batch size per device")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of data loader workers")
 
     # training hyperparameters
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--num_epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--warmup_steps', type=int, default=1000, help="LR warmup steps")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help="Max gradient norm for clipping")
     parser.add_argument('--mixed_precision', type=str, default='fp16', choices=['no', 'fp16', 'bf16'], help="Mixed precision training mode")
 
