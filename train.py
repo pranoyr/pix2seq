@@ -391,13 +391,13 @@ def train(args):
                                 accelerator,
                                 device,
                                 global_step,
-                                num_samples=4
+                                num_samples=10
                             )
                       
                         accelerator.wait_for_everyone()
 
                     # 3. Validation: Run on ALL processes
-                    if not (global_step % args.eval_every):
+                    if not (global_step % args.eval_every) and global_step > 0:
                         validate(
                             model,
                             val_dl,

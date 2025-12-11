@@ -20,17 +20,14 @@ import torch
 def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation_scale=0.2):
     """
     Generates noise boxes using 50% Pure Random and 50% Perturbed Real strategies.
-    
-    Args:
-        real_boxes: List of [x, y, w, h] (Absolute coordinates)
-        image_w, image_h: Dimensions of the canvas/image
-        num_noise: How many noise boxes to generate
-        perturbation_scale: How much to shift/scale real boxes (0.2 = 20%)
-        
-    Returns:
-        noise_boxes: List of [x, y, w, h]
+    Robust to small image sizes.
     """
     noise_boxes = []
+
+    # --- SAFETY PRE-CALCULATION ---
+    # Ensure the upper bound is at least 1 to prevent crashes on tiny images
+    max_w_limit = max(1, image_w // 2)
+    max_h_limit = max(1, image_h // 2)
 
     for _ in range(num_noise):
         
@@ -39,37 +36,37 @@ def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation
 
         if use_pure_random:
             # === STRATEGY 1: Pure Random Box ===
-            # Generate a box anywhere. 
-            # Min size 10px, Max size 1/2 image
-            w = random.randint(10, image_w // 2)
-            h = random.randint(10, image_h // 2)
+            
+            # FIX: Ensure lower bound is never larger than upper bound
+            # If max_w_limit is 7 (image is 14px), we want randint(7, 7)
+            # If max_w_limit is 100, we want randint(10, 100)
+            low_w = min(10, max_w_limit)
+            low_h = min(10, max_h_limit)
+
+            w = random.randint(low_w, max_w_limit)
+            h = random.randint(low_h, max_h_limit)
+            
             x = random.randint(0, max(0, image_w - w))
             y = random.randint(0, max(0, image_h - h))
             noise_boxes.append([x, y, w, h])
             
         else:
             # === STRATEGY 2: Perturbed Real Box (Hard Negative) ===
-            # Pick a real object and mess it up slightly
             base_box = random.choice(real_boxes) # [x, y, w, h]
             bx, by, bw, bh = base_box
             
-            # 1. Random Shift (Offset)
-            # Shift center by +/- 20% of the size
             shift_x = int(bw * perturbation_scale * random.uniform(-1, 1))
             shift_y = int(bh * perturbation_scale * random.uniform(-1, 1))
             
-            # 2. Random Scale (Resize)
-            # Scale size between 0.8x and 1.2x
             scale_w = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
             scale_h = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
             
-            # Calculate new box
             nw = int(bw * scale_w)
             nh = int(bh * scale_h)
             nx = int(bx + shift_x)
             ny = int(by + shift_y)
             
-            # 3. Clip to Image Boundaries (Important!)
+            # Clip to Image Boundaries
             nx = max(0, min(nx, image_w - 1))
             ny = max(0, min(ny, image_h - 1))
             nw = max(1, min(nw, image_w - nx))
@@ -78,6 +75,70 @@ def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation
             noise_boxes.append([nx, ny, nw, nh])
 
     return noise_boxes
+
+
+
+# def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation_scale=0.2):
+#     """
+#     Generates noise boxes using 50% Pure Random and 50% Perturbed Real strategies.
+    
+#     Args:
+#         real_boxes: List of [x, y, w, h] (Absolute coordinates)
+#         image_w, image_h: Dimensions of the canvas/image
+#         num_noise: How many noise boxes to generate
+#         perturbation_scale: How much to shift/scale real boxes (0.2 = 20%)
+        
+#     Returns:
+#         noise_boxes: List of [x, y, w, h]
+#     """
+#     noise_boxes = []
+
+#     for _ in range(num_noise):
+        
+#         # Strategy: 50% chance of Pure Random, 50% chance of Perturbed Real
+#         use_pure_random = (len(real_boxes) == 0) or (random.random() > 0.5)
+
+#         if use_pure_random:
+#             # === STRATEGY 1: Pure Random Box ===
+#             # Generate a box anywhere. 
+#             # Min size 10px, Max size 1/2 image
+#             w = random.randint(10, image_w // 2)
+#             h = random.randint(10, image_h // 2)
+#             x = random.randint(0, max(0, image_w - w))
+#             y = random.randint(0, max(0, image_h - h))
+#             noise_boxes.append([x, y, w, h])
+            
+#         else:
+#             # === STRATEGY 2: Perturbed Real Box (Hard Negative) ===
+#             # Pick a real object and mess it up slightly
+#             base_box = random.choice(real_boxes) # [x, y, w, h]
+#             bx, by, bw, bh = base_box
+            
+#             # 1. Random Shift (Offset)
+#             # Shift center by +/- 20% of the size
+#             shift_x = int(bw * perturbation_scale * random.uniform(-1, 1))
+#             shift_y = int(bh * perturbation_scale * random.uniform(-1, 1))
+            
+#             # 2. Random Scale (Resize)
+#             # Scale size between 0.8x and 1.2x
+#             scale_w = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
+#             scale_h = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
+            
+#             # Calculate new box
+#             nw = int(bw * scale_w)
+#             nh = int(bh * scale_h)
+#             nx = int(bx + shift_x)
+#             ny = int(by + shift_y)
+            
+#             # 3. Clip to Image Boundaries (Important!)
+#             nx = max(0, min(nx, image_w - 1))
+#             ny = max(0, min(ny, image_h - 1))
+#             nw = max(1, min(nw, image_w - nx))
+#             nh = max(1, min(nh, image_h - ny))
+            
+#             noise_boxes.append([nx, ny, nw, nh])
+
+#     return noise_boxes
 
 
 def visualize_batch(root_path):
@@ -160,11 +221,11 @@ def visualize_batch(root_path):
 
 
 class MultiScaleCocoDataset(CocoDetection):
-    def __init__(self, root, annFile, max_size=1024):
+    def __init__(self, root, annFile, max_size=1024, is_train=True):
         super().__init__(root, annFile)
 
         self.max_size = max_size
-
+        self.is_train = is_train
    
         # --- NEW MAPPING LOGIC START ---
         # COCO IDs are [1, ..., 90] with gaps. 
@@ -182,33 +243,37 @@ class MultiScaleCocoDataset(CocoDetection):
 
 
     def get_target_size(self, h, w):
-        # 1. Random Jitter
-        scale = random.uniform(0.3, 2.0)
-        
-        # 2. Check Clamp (Safety Cap)
-        # Calculate what dimensions WOULD be
-        h_scaled = h * scale
-        w_scaled = w * scale
-        
-        # If it's too big, force it down to max_size
-        if max(h_scaled, w_scaled) > self.max_size:
-            scale = self.max_size / max(h, w)
             
-        # 3. Apply Scale
-        new_h = int(h * scale)
-        new_w = int(w * scale)
-        
-        # 4. --- DINOv2 FIX: Snap to grid of 14 ---
-        patch_size = 14
-        new_h = int(round(new_h / patch_size) * patch_size)
-        new_w = int(round(new_w / patch_size) * patch_size)
-        
-        # Prevent collapsing to 0
-        new_h = max(new_h, patch_size)
-        new_w = max(new_w, patch_size)
-        
-        
-        return (new_h, new_w)
+            if self.is_train:
+                # === TRAINING: Random Jitter ===
+                scale = random.uniform(0.3, 2.0)
+                
+                # Clamp to max_size
+                h_scaled = h * scale
+                w_scaled = w * scale
+                if max(h_scaled, w_scaled) > self.max_size:
+                    scale = self.max_size / max(h, w)
+                    
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+                
+            else:
+                # === VALIDATION: Deterministic Resize ===
+                # Simply resize so the longest side equals max_size
+                scale = self.max_size / max(h, w)
+                new_h = int(h * scale)
+                new_w = int(w * scale)
+
+            # === DINOv2 FIX (Apply to BOTH Train and Val) ===
+            patch_size = 14
+            new_h = int(round(new_h / patch_size) * patch_size)
+            new_w = int(round(new_w / patch_size) * patch_size)
+            
+            # Safety
+            new_h = max(new_h, patch_size)
+            new_w = max(new_w, patch_size)
+            
+            return (new_h, new_w)
 
 
     def __getitem__(self, index):
@@ -369,7 +434,8 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
     train_dataset = MultiScaleCocoDataset(
         root=train_img,
         annFile=train_ann,
-        max_size=1024
+        max_size=1024,
+        is_train=True
     )
     
     train_loader = DataLoader(
@@ -378,14 +444,15 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True
+        pin_memory=True,
     )
 
     print("Initializing Validation Set...")
     val_dataset = MultiScaleCocoDataset(
         root=val_img,
         annFile=val_ann,
-        max_size=1024
+        max_size=1024,
+        is_train=False
     )
 
     val_loader = DataLoader(
@@ -394,7 +461,7 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True
+        pin_memory=True,
     )
 
 
