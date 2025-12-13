@@ -53,9 +53,4 @@ accelerate config
 accelerate launch train.py \
     --root /path/to/coco/ \
     --project_name "Pix2Seq" \
-    --batch_size 4 \
-    --num_epochs 10 \
-    --lr 1e-4 \
-    --eval_every 2000 \
-    --sample_every 1000 \
-    --ckpt_saved_dir "./ckpt"
+    --batch_size 32 
