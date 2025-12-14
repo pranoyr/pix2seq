@@ -41,20 +41,20 @@ class PositionEmbeddingSine(nn.Module):
         if h * w != seq_len:
             raise ValueError(f"Feature grid {h}x{w} ({h*w}) does not match sequence length {seq_len}!")
         
-        # 1. Create Grid Mask
+        # Create Grid Mask
         mask = torch.ones((b, h, w), device=x.device)
         
         # 2. Cumulative Sum
         y_embed = mask.cumsum(1, dtype=torch.float32)
         x_embed = mask.cumsum(2, dtype=torch.float32)
         
-        # 3. Normalize
+        # Normalize
         if self.normalize:
             eps = 1e-6
             y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
             x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
 
-        # 4. Generate Sine/Cosine
+        # Generate Sine/Cosine
         dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
         dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
 
@@ -64,7 +64,7 @@ class PositionEmbeddingSine(nn.Module):
         pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
         pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
         
-        # 5. Concatenate and Flatten
+        # Concatenate and Flatten
         pos = torch.cat((pos_y, pos_x), dim=3)
         return pos.flatten(1, 2)
 
@@ -80,8 +80,6 @@ class Pix2SeqModel(nn.Module):
         for param in self.dino.parameters():
             param.requires_grad = False
             
-
-
 
         tokenizer = Pix2SeqTokenizer(
             num_bins=1000,
@@ -145,7 +143,6 @@ class Pix2SeqModel(nn.Module):
             outputs = self.dino(image)
             visual_feats = outputs.last_hidden_state[:, 1:, :] 
             
-        # --- B. Project ---
         memory = self.projector(visual_feats)
 
         # Generate positional embeddings based on the shape of memory
@@ -155,23 +152,23 @@ class Pix2SeqModel(nn.Module):
         # Add to memory (broadcasts correctly)
         memory = memory + pos
         
-        # 1. Slice Inputs and Targets
+        # Slice Inputs and Targets
         # Input to Decoder: Remove the LAST token (We never predict from <EOS> or the last <PAD>)
         dec_input = target_tokens[:, :-1] 
         
         # Target for Loss: Remove the FIRST token (We never predict <BOS>)
         labels = target_tokens[:, 1:]
         
-        # 2. Prepare Embeddings
+        # Prepare Embeddings
         seq_len = dec_input.size(1)
         pos_ids = torch.arange(seq_len, device=target_tokens.device).unsqueeze(0)
         tgt = self.token_embedding(dec_input) + self.text_pos_embedding(pos_ids)
         
-        # 3. Create Masks based on dec_input length
+        # Create Masks based on dec_input length
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len).to(target_tokens.device)
         tgt_padding_mask = (dec_input == self.pad_token_id)
         
-        # 4. Decode
+        # Decode
         output = self.decoder(
             tgt=tgt, 
             memory=memory, 
@@ -179,10 +176,10 @@ class Pix2SeqModel(nn.Module):
             tgt_key_padding_mask=tgt_padding_mask
         )
         
-        # 5. Calculate Logits
+        #Calculate Logits
         logits = self.output_head(output)
         
-        # 6. Calculate Loss
+        # Calculate Loss
         # Flatten inputs: (Batch * Seq_Len, Vocab_Size)
         loss = self.criterion(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
 
@@ -236,28 +233,27 @@ class Pix2SeqModel(nn.Module):
             last_logits = self.output_head(output[:, -1, :]) 
             
             # --- TOP-P SAMPLING LOGIC ---
-            # 1. Apply Temperature
+            # Apply Temperature
             logits = last_logits / temperature
             
-            # 2. Sort probabilities
+            # Sort probabilities
             sorted_logits, sorted_indices = torch.sort(logits, descending=True)
             cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
 
-            # 3. Remove tokens with cumulative probability above the threshold (top_p)
+            # Remove tokens with cumulative probability above the threshold (top_p)
             sorted_indices_to_remove = cumulative_probs > top_p
             
             # Shift the indices to the right to keep also the first token above the threshold
             sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
             sorted_indices_to_remove[..., 0] = 0
 
-            # 4. Scatter sorted tensors to original indexing
+            # Scatter sorted tensors to original indexing
             indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
             logits[indices_to_remove] = float('-inf')
             
-            # 5. Sample from the filtered distribution
+            # Sample from the filtered distribution
             probs = F.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, 1)
-            # -----------------------------
 
             generated_seq = torch.cat([generated_seq, next_token], dim=1)
             

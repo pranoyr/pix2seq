@@ -353,10 +353,6 @@ def train(args):
                 images = images.to(device)
                 targets = targets.to(device)
 
-
-                # =========================
-                # GENERATOR TRAINING STEP
-                # =========================
                 with accelerator.accumulate(model):
                     
                     optim.zero_grad(set_to_none=True)
@@ -374,17 +370,17 @@ def train(args):
                         scheduler.step()
 
             
-             # =========================
+                # =========================
                 # LOGGING AND CHECKPOINTING
                 # =========================
                 if accelerator.sync_gradients:
                     
-                    # 1. Checkpointing: Only Main Process
+                    # Checkpointing: Only Main Process
                     if not (global_step % args.ckpt_every) and accelerator.is_main_process:
                         save_ckpt(args, accelerator, model, optim, scheduler, global_step,
                                   os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth'))
                     
-                    # 2. Sampling: Main Process Works, Everyone Waits
+                    # Sampling: Main Process Works, Everyone Waits
                     if not (global_step % args.sample_every):
                         # Work
                         if accelerator.is_main_process:
@@ -400,7 +396,7 @@ def train(args):
                       
                         accelerator.wait_for_everyone()
 
-                    # 3. Validation: Run on ALL processes
+                    #  Validation: Run on ALL processes
                     if not (global_step % args.eval_every):
                         validate(
                             model,
@@ -412,7 +408,7 @@ def train(args):
                         )
                         accelerator.wait_for_everyone() 
                     
-                    # 4. Logging Scalars: Main Process Only
+                    #  Logging Scalars: Main Process Only
                     if accelerator.is_main_process:
                         log_dict = {
                             "loss": loss.item(),
