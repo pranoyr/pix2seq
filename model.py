@@ -7,9 +7,6 @@ import math
 
 
 
-# ==========================================
-#  Rotary Embedding Components
-# ==========================================
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len=2048):
         super().__init__()
@@ -20,9 +17,7 @@ class RotaryEmbedding(nn.Module):
         # Outer product to get frequencies
         freqs = torch.einsum("i,j->ij", t, inv_freq)
 
-        # Concat [sin, cos] logic implicitly happens by repeating freqs
-        # We store them as complex numbers or just pre-computed sin/cos usually
-        # Here we use the standard "cat" format for simple application
+        # prepare frequency embeddings
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("emb", emb)
 
