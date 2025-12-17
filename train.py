@@ -288,9 +288,16 @@ def train(args):
     # set device
     device = accelerator.device
     # model
-    model = Pix2SeqModel()
+    model = Pix2SeqModel(
+        dino_model_name=args.dino_model_name,
+        decoder_dim=args.decoder_dim,
+        num_decoder_layers=args.num_decoder_layers,
+        nhead=args.nhead,
+        dim_head=args.dim_head,
+        max_seq_len=args.max_seq_len,
+    )
 
-    tokenizer = Pix2SeqTokenizer(num_bins=1000)
+    tokenizer = Pix2SeqTokenizer(num_bins=args.num_bins)
     
     # Train loders
     train_dl, val_dl = get_pix2seq_dataloaders(
@@ -443,14 +450,24 @@ if __name__ == "__main__":
     parser.add_argument('--project_name', type=str, default='Pix2Seq', help="WandB project name")
     parser.add_argument('--root', type=str, default='/run/media/pranoy/Datasets/coco-dataset/coco',help="Path to dataset")
     parser.add_argument('--resume', type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument('--batch_size', type=int, default=16, help="Batch size per device")
+    parser.add_argument('--batch_size', type=int, default=8, help="Batch size per device")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of data loader workers")
+    parser.add_argument('--num_bins', type=int, default=1000, help="Number of bins for box encoding")
+
+    # model parameters
+    parser.add_argument('--dino_model_name', type=str, default='facebook/dinov2-base', help="DINO model name")
+    parser.add_argument('--decoder_dim', type=int, default=512, help="Decoder model dimension")
+    parser.add_argument('--num_decoder_layers', type=int, default=6, help="Number of decoder layers")
+    parser.add_argument('--nhead', type=int, default=8, help="Number of attention heads in the decoder")
+    parser.add_argument('--max_seq_len', type=int, default=1024, help="Maximum sequence length for the decoder")
+    parser.add_argument('--dim_head', type=int, default=64, help="Dimension of each attention head in the decoder")
+
 
     # training hyperparameters
     parser.add_argument('--lr', type=float, default=1e-4, help="Learning rate")
     parser.add_argument('--num_epochs', type=int, default=400, help="Number of training epochs")
     parser.add_argument('--warmup_steps', type=int, default=2000, help="LR warmup steps")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=2, help="Gradient accumulation steps")
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help="Max gradient norm for clipping")
     parser.add_argument('--mixed_precision', type=str, default='fp16', choices=['no', 'fp16', 'bf16'], help="Mixed precision training mode")
 

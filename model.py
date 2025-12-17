@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # ==========================================
-# 1. Rotary Embedding Components
+#  Rotary Embedding Components
 # ==========================================
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len=2048):
@@ -53,14 +53,16 @@ def apply_rotary_pos_emb(x, freqs):
 
 
 class RoPEDecoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, head_dim=64, dim_feedforward=2048, dropout=0.1):
+    def __init__(self, d_model, nhead=8, head_dim=64, dropout=0.1):
         super().__init__()
         self.nhead = nhead
         self.head_dim = head_dim
         self.inner_dim = nhead * head_dim 
+
+        dim_feedforward = 4 * d_model
         
         # ==========================
-        # 1. SELF ATTENTION (Manual)
+        #  SELF ATTENTION 
         # ==========================
         self.sa_q = nn.Linear(d_model, self.inner_dim)
         self.sa_k = nn.Linear(d_model, self.inner_dim)
@@ -68,16 +70,13 @@ class RoPEDecoderLayer(nn.Module):
         self.sa_out = nn.Linear(self.inner_dim, d_model)
         
         # ==========================
-        # 2. CROSS ATTENTION (Manual)
+        # CROSS ATTENTION 
         # ==========================
         self.ca_q = nn.Linear(d_model, self.inner_dim)
         self.ca_k = nn.Linear(d_model, self.inner_dim)
         self.ca_v = nn.Linear(d_model, self.inner_dim)
         self.ca_out = nn.Linear(self.inner_dim, d_model)
         
-        # ==========================
-        # 3. Standard Components
-        # ==========================
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.dropout = nn.Dropout(dropout)
@@ -107,11 +106,8 @@ class RoPEDecoderLayer(nn.Module):
         return out
 
     def forward(self, tgt, memory, rope_emb, tgt_mask=None):
-        # --- 1. Self Attention (Pre-Norm) ---
-        # Normalize input BEFORE using it
         tgt_norm = self.norm1(tgt)
         
-        # Project the NORMALIZED input
         q = self.sa_q(tgt_norm)
         k = self.sa_k(tgt_norm)
         v = self.sa_v(tgt_norm)
@@ -130,10 +126,8 @@ class RoPEDecoderLayer(nn.Module):
         tgt2 = self.attention(q, k, v, mask=tgt_mask, is_causal=False)
         tgt2 = self.sa_out(tgt2)
         
-        # Residual: Add to the ORIGINAL (un-normalized) tgt
         tgt = tgt + self.dropout1(tgt2)
 
-        # --- 2. Cross Attention (Pre-Norm) ---
         tgt_norm = self.norm2(tgt)
         
         # Query comes from normalized Decoder state
@@ -143,14 +137,13 @@ class RoPEDecoderLayer(nn.Module):
         k_cross = self.ca_k(memory)  
         v_cross = self.ca_v(memory)
         
+        # cross attention
         tgt2 = self.attention(q_cross, k_cross, v_cross, mask=None)
         tgt2 = self.ca_out(tgt2)
         
         # Residual
         tgt = tgt + self.dropout2(tgt2)
 
-        # --- 3. FFN (Pre-Norm) ---
-        # Normalize input BEFORE
         tgt_norm = self.norm3(tgt)
         
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt_norm))))
@@ -160,10 +153,7 @@ class RoPEDecoderLayer(nn.Module):
         
         return tgt
 
-# ==========================================
-# 3. Updated Pix2Seq Model
-# ==========================================
-# Keep your PositionEmbeddingSine class exactly as it is!
+
 class PositionEmbeddingSine(nn.Module):
     def __init__(self, num_pos_feats=64, temperature=10000, normalize=True):
         super().__init__()
@@ -201,8 +191,9 @@ class Pix2SeqModel(nn.Module):
                 decoder_dim=256,
                 num_decoder_layers=6,
                 nhead=8,
-                max_seq_len=1024,
-                dim_head=64):
+                dim_head=64,
+                max_seq_len=1024):
+        
         super().__init__()
         
         # 1. Vision Encoder (DINOv2) - FROZEN
@@ -221,72 +212,69 @@ class Pix2SeqModel(nn.Module):
         self.bos_token_id = tokenizer.bos_id
         self.eos_token_id = tokenizer.eos_id
 
-        # --- A. POSITIONAL EMBEDDINGS ---
-        # 1. Encoder (Memory): Sine (Standard)
-        # Keeps absolute position for 2D Image features
+        # Positional Embeddings for Image Features (Additive Sine)
         self.pos_embed_image = PositionEmbeddingSine(num_pos_feats=decoder_dim // 2, normalize=True)
         
     
-        # 2. Decoder: Rotary Embeddings
+        # Decoder: Rotary Embeddings
         self.rope = RotaryEmbedding(dim=dim_head, max_seq_len=max_seq_len)
         
-        # 2. Projector
+        # Projector
         self.projector = nn.Linear(dino_dim, decoder_dim)
         
-        # 3. Custom Decoder Stack 
+        # Decoder Layers
         self.decoder_layers = nn.ModuleList([
             RoPEDecoderLayer(d_model=decoder_dim, nhead=nhead, head_dim=dim_head)
             for _ in range(num_decoder_layers)
         ])
         
-        # 4. Embeddings (Just Token Embedding, no absolute pos embedding needed)
+        # Embeddings (Just Token Embedding, no absolute pos embedding needed)
         self.token_embedding = nn.Embedding(vocab_size, decoder_dim)
         
-        # 5. Output Head
+        # Output Head
         self.output_head = nn.Linear(decoder_dim, vocab_size)
 
         self.final_norm = nn.LayerNorm(decoder_dim)
         
-        # 6. Loss
+        # Loss
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.pad_token_id, reduction='none')
 
     def forward(self, image, target_tokens=None, loss_masks=None):
         B, C, H, W = image.shape
         h_feat, w_feat = H // 14, W // 14
         
-        # --- A. Vision Encoder ---
+        # --- Vision Encoder ---
         with torch.no_grad():
             outputs = self.dino(image)
             visual_feats = outputs.last_hidden_state[:, 1:, :] 
             
         memory = self.projector(visual_feats)
 
-        # --- B. Add Sine Embeddings to Memory ---
-        # Crucial: Encoder still uses Additive Sine!
+        # --- Add Sine Embeddings to Memory ---
         pos_img = self.pos_embed_image(memory, h=h_feat, w=w_feat)
         memory = memory + pos_img
         
-        # --- C. Decoder Prep ---
+        # --- Decoder Prep ---
         dec_input = target_tokens[:, :-1] 
         labels = target_tokens[:, 1:]
         
-        # 1. Embed (No Absolute Pos Added!)
+        # Embed
         tgt = self.token_embedding(dec_input)
         
-        # 2. Generate RoPE Frequencies for this sequence length
+        # Generate RoPE Frequencies for this sequence length
         rope_emb = self.rope(tgt)
         
-        # 3. Create Causal Mask
+        # Create Causal Mask
         seq_len = dec_input.size(1)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(seq_len).to(target_tokens.device)
         
-        # 4. Run Custom Layers
+        # Run through Decoder Layers
         for layer in self.decoder_layers:
             tgt = layer(tgt, memory, rope_emb, tgt_mask=tgt_mask)
 
         tgt = self.final_norm(tgt)
         
-        # --- D. Loss ---
+        # Output Head
         logits = self.output_head(tgt)
         
         
@@ -305,14 +293,14 @@ class Pix2SeqModel(nn.Module):
         B, C, H, W = image.shape
         h_feat, w_feat = H // 14, W // 14
 
-        # 1. Encode Image
+        # Encode Image
         outputs = self.dino(image)
         visual_feats = outputs.last_hidden_state[:, 1:, :] 
         memory = self.projector(visual_feats)
         pos_img = self.pos_embed_image(memory, h=h_feat, w=w_feat)
         memory = memory + pos_img
 
-        # 2. Initialize Sequence
+        # Initialize Sequence
         generated_seq = torch.full((B, 1), self.bos_token_id, dtype=torch.long, device=device)
 
         for _ in range(max_new_tokens):
