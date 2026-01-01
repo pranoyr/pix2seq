@@ -412,6 +412,7 @@ def train(args):
 
                     # Sampling: Main Process Works, Everyone Waits
                     if not (global_step % args.sample_every):
+
                         # Work
                         if accelerator.is_main_process:
                             sample_images(
@@ -427,7 +428,7 @@ def train(args):
                         accelerator.wait_for_everyone()
 
                     #  Validation: Run on ALL processes
-                    if not (global_step % args.eval_every):
+                    if not (global_step % args.eval_every) and global_step != 0 and args.resume is None:
                         validate(
                             model, val_dl, tokenizer, accelerator, device, global_step
                         )
@@ -442,6 +443,7 @@ def train(args):
                         accelerator.log(log_dict, step=global_step)
 
                     global_step += 1
+                    args.resume = None  # only skip eval for first iteration if resuming
 
     # save the final model
     if accelerator.is_main_process:
@@ -470,7 +472,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--root",
         type=str,
-        default="/run/media/pranoy/Datasets/coco-dataset/coco",
+        default="/mnt/datasets/coco-dataset/coco",
         help="Path to dataset",
     )
     parser.add_argument(
