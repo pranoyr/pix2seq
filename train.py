@@ -17,6 +17,7 @@ from model import Pix2SeqModel
 from dataloader import get_pix2seq_dataloaders
 from tokenizer import Pix2SeqTokenizer
 import torchvision
+from utils import fast_map50
 
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
@@ -142,116 +143,101 @@ def sample_images(
     model.train()
 
 
+
 @torch.no_grad()
 def validate(model, val_loader, tokenizer, accelerator, device, global_step):
+    """
+    A lightweight 'Proxy' validation to check convergence speed.
+    NOT comparable to official COCO mAP.
+    """
     unwrapped_model = accelerator.unwrap_model(model)
     unwrapped_model.eval()
 
-    # Increase max_new_tokens for better recall during validation
-    VAL_MAX_TOKENS = 300
-
-    metric = MeanAveragePrecision(iou_type="bbox", class_metrics=False).to(device)
+    # Increased slightly to avoid cutting off crowded scenes
+    VAL_MAX_TOKENS = 150  
+    
+    # Trackers for Distributed Averaging
+    local_score_sum = 0.0
+    local_count = 0
 
     if accelerator.is_main_process:
-        print(f"\n[Step {global_step}] Starting Validation...")
+        print(f"\n[Step {global_step}] Validation...")
 
-    # Iterate over the loader (handling dictionary)
+    # Iterate
     for batch in tqdm(val_loader, disable=not accelerator.is_main_process):
         images = batch["images"].to(device)
         target_tokens = batch["tokens"].to(device)
-        valid_sizes = batch["valid_sizes"]  # Keep CPU or move to device if needed
+        valid_sizes = batch["valid_sizes"] # [B, 2]
 
-        # 1. Generate
-        generated_seqs = unwrapped_model.generate(images, max_new_tokens=VAL_MAX_TOKENS)
+        # Generate
+        generated = unwrapped_model.generate(images, max_new_tokens=VAL_MAX_TOKENS)
 
-        preds = []
-        targets = []
-
+        # Process Batch
         for i in range(images.size(0)):
-            # Get valid dimensions for this image
             h_valid, w_valid = valid_sizes[i].tolist()
 
-            # --- Process Prediction ---
-            pred_boxes_norm, pred_labels = tokenizer.decode(generated_seqs[i])
+            # Decode
+            pred_boxes_n, pred_labels = tokenizer.decode(generated[i])
+            gt_boxes_n, gt_labels = tokenizer.decode(target_tokens[i])
 
-            pred_boxes_abs = []
-            for box in pred_boxes_norm:
-                # Scale by VALID dimensions
-                pb = [
-                    box[0] * w_valid,
-                    box[1] * h_valid,
-                    box[2] * w_valid,
-                    box[3] * h_valid,
-                ]
-                # xywh -> xyxy
-                pb_xyxy = [pb[0], pb[1], pb[0] + pb[2], pb[1] + pb[3]]
-                pred_boxes_abs.append(pb_xyxy)
+            # Skip images with no GT (backgrounds) to avoid div/0 or skewing
+            if len(gt_boxes_n) == 0:
+                continue
 
-            if len(pred_boxes_abs) > 0:
-                preds.append(
-                    {
-                        "boxes": torch.tensor(
-                            pred_boxes_abs, dtype=torch.float32, device=device
-                        ),
-                        "scores": torch.ones(len(pred_labels), device=device),
-                        "labels": torch.tensor(
-                            pred_labels, dtype=torch.long, device=device
-                        ),
-                    }
-                )
+            # Convert to Absolute Coords (Validation needs pixels, not 0-1)
+            # Handle empty predictions gracefully
+            if len(pred_boxes_n) > 0:
+                pred_boxes = torch.tensor(pred_boxes_n, device=device)
+                # Scale: x*w, y*h, w*w, h*h (assuming box format is xywh or similar)
+                # NOTE: Ensure your tokenizer returns [x,y,w,h]. 
+                # If using xyxy, logic differs. Assuming standard [x,y,w,h] normalized:
+                pred_boxes[:, 0] *= w_valid
+                pred_boxes[:, 1] *= h_valid
+                pred_boxes[:, 2] *= w_valid
+                pred_boxes[:, 3] *= h_valid
+                
+                # Convert [x,y,w,h] -> [x1,y1,x2,y2] for IoU calculation
+                pred_boxes[:, 2] += pred_boxes[:, 0]
+                pred_boxes[:, 3] += pred_boxes[:, 1]
             else:
-                preds.append(
-                    {
-                        "boxes": torch.tensor([], device=device),
-                        "scores": torch.tensor([], device=device),
-                        "labels": torch.tensor([], device=device),
-                    }
-                )
+                pred_boxes = torch.empty((0, 4), device=device)
 
-            # --- Process Ground Truth ---
-            gt_boxes_norm, gt_labels = tokenizer.decode(target_tokens[i])
+            # Do same for GT
+            gt_boxes = torch.tensor(gt_boxes_n, device=device)
+            gt_boxes[:, 0] *= w_valid
+            gt_boxes[:, 1] *= h_valid
+            gt_boxes[:, 2] *= w_valid
+            gt_boxes[:, 3] *= h_valid
+            gt_boxes[:, 2] += gt_boxes[:, 0]
+            gt_boxes[:, 3] += gt_boxes[:, 1]
 
-            gt_boxes_abs = []
-            for box in gt_boxes_norm:
-                # Scale by VALID dimensions
-                gb = [
-                    box[0] * w_valid,
-                    box[1] * h_valid,
-                    box[2] * w_valid,
-                    box[3] * h_valid,
-                ]
-                gb_xyxy = [gb[0], gb[1], gb[0] + gb[2], gb[1] + gb[3]]
-                gt_boxes_abs.append(gb_xyxy)
+            pred_labels = torch.tensor(pred_labels, device=device)
+            gt_labels = torch.tensor(gt_labels, device=device)
 
-            targets.append(
-                {
-                    "boxes": torch.tensor(
-                        gt_boxes_abs, dtype=torch.float32, device=device
-                    ),
-                    "labels": torch.tensor(gt_labels, dtype=torch.long, device=device),
-                }
-            )
+            # --- CALCULATE METRIC ---
+            score = fast_map50(pred_boxes, pred_labels, gt_boxes, gt_labels)
+            
+            local_score_sum += score
+            local_count += 1
 
-        metric.update(preds, targets)
+    # We turn our scalars into tensors so Accelerator can gather them
+    stats_tensor = torch.tensor([local_score_sum, local_count], device=device)
+    
+    # Sum up the scores and counts from ALL GPUs
+    stats_tensor = accelerator.reduce(stats_tensor, reduction="sum")
+    
+    total_score = stats_tensor[0].item()
+    total_count = stats_tensor[1].item()
 
-    result = metric.compute()
-
-    map_50 = result["map_50"].item()
-    map_75 = result["map_75"].item()
-    map_coco = result["map"].item()
+    # Avoid div/0
+    avg_map = total_score / max(total_count, 1)
 
     if accelerator.is_main_process:
-        print(
-            f"Validation Results - mAP (COCO): {map_coco:.4f} | mAP@50: {map_50:.4f} | mAP@75: {map_75:.4f}"
-        )
-
-        accelerator.log(
-            {"val/mAP": map_coco, "val/mAP_50": map_50, "val/mAP_75": map_75},
-            step=global_step,
-        )
+        print(f"Fast Proxy mAP@50: {avg_map:.4f}")
+        accelerator.log({"val/proxy_map_50": avg_map}, step=global_step)
 
     model.train()
-    return map_coco
+    return avg_map
 
 
 def resume_from_checkpoint(device, filename, model, optim, scheduler):

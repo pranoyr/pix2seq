@@ -378,6 +378,10 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
         root=val_img, annFile=val_ann, max_size=1024, is_train=False
     )
 
+    # Create a fixed subset of the first 200 images
+    mini_indices = list(range(200)) 
+    val_dataset = torch.utils.data.Subset(val_dataset, mini_indices)
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
