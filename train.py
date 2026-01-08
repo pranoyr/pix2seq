@@ -376,9 +376,12 @@ def train(args):
                 if accelerator.sync_gradients:
                     
                     # Checkpointing: Only Main Process
-                    if not (global_step % args.ckpt_every) and accelerator.is_main_process:
-                        save_ckpt(args, accelerator, model, optim, scheduler, global_step,
-                                  os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth'))
+                    if not (global_step % args.ckpt_every):
+                        if accelerator.is_main_process:
+                            save_ckpt(args, accelerator, model, optim, scheduler, global_step,
+                                    os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth'))
+                            
+                        accelerator.wait_for_everyone()
                     
                     # Sampling: Main Process Works, Everyone Waits
                     if not (global_step % args.sample_every):
@@ -397,7 +400,7 @@ def train(args):
                         accelerator.wait_for_everyone()
 
                     #  Validation: Run on ALL processes
-                    if not (global_step % args.eval_every):
+                    if not (global_step % args.eval_every) and global_step != 0:
                         validate(
                             model,
                             val_dl,
