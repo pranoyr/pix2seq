@@ -305,6 +305,10 @@ def train(args):
         root_path=args.root, batch_size=args.batch_size, num_workers=args.num_workers
     )
 
+
+    print("DataLoaders prepared.")
+    print(len(train_dl))
+
     # training parameters
     optim = torch.optim.AdamW(
         model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.05
@@ -323,6 +327,8 @@ def train(args):
     model, optim, scheduler, train_dl, val_dl = accelerator.prepare(
         model, optim, scheduler, train_dl, val_dl
     )
+
+    print(len(train_dl))
 
     # load models
     if args.resume:
@@ -465,7 +471,7 @@ if __name__ == "__main__":
         "--resume", type=str, default=None, help="Path to checkpoint to resume from"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=8, help="Batch size per device"
+        "--batch_size", type=int, default=16, help="Batch size per device"
     )
     parser.add_argument(
         "--num_workers", type=int, default=4, help="Number of data loader workers"
@@ -514,7 +520,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=4,
+        default=1,
         help="Gradient accumulation steps",
     )
     parser.add_argument(
