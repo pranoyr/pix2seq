@@ -78,69 +78,6 @@ def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation
 
 
 
-# def generate_noise_boxes(real_boxes, image_w, image_h, num_noise=3, perturbation_scale=0.2):
-#     """
-#     Generates noise boxes using 50% Pure Random and 50% Perturbed Real strategies.
-    
-#     Args:
-#         real_boxes: List of [x, y, w, h] (Absolute coordinates)
-#         image_w, image_h: Dimensions of the canvas/image
-#         num_noise: How many noise boxes to generate
-#         perturbation_scale: How much to shift/scale real boxes (0.2 = 20%)
-        
-#     Returns:
-#         noise_boxes: List of [x, y, w, h]
-#     """
-#     noise_boxes = []
-
-#     for _ in range(num_noise):
-        
-#         # Strategy: 50% chance of Pure Random, 50% chance of Perturbed Real
-#         use_pure_random = (len(real_boxes) == 0) or (random.random() > 0.5)
-
-#         if use_pure_random:
-#             # === STRATEGY 1: Pure Random Box ===
-#             # Generate a box anywhere. 
-#             # Min size 10px, Max size 1/2 image
-#             w = random.randint(10, image_w // 2)
-#             h = random.randint(10, image_h // 2)
-#             x = random.randint(0, max(0, image_w - w))
-#             y = random.randint(0, max(0, image_h - h))
-#             noise_boxes.append([x, y, w, h])
-            
-#         else:
-#             # === STRATEGY 2: Perturbed Real Box (Hard Negative) ===
-#             # Pick a real object and mess it up slightly
-#             base_box = random.choice(real_boxes) # [x, y, w, h]
-#             bx, by, bw, bh = base_box
-            
-#             # 1. Random Shift (Offset)
-#             # Shift center by +/- 20% of the size
-#             shift_x = int(bw * perturbation_scale * random.uniform(-1, 1))
-#             shift_y = int(bh * perturbation_scale * random.uniform(-1, 1))
-            
-#             # 2. Random Scale (Resize)
-#             # Scale size between 0.8x and 1.2x
-#             scale_w = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
-#             scale_h = random.uniform(1.0 - perturbation_scale, 1.0 + perturbation_scale)
-            
-#             # Calculate new box
-#             nw = int(bw * scale_w)
-#             nh = int(bh * scale_h)
-#             nx = int(bx + shift_x)
-#             ny = int(by + shift_y)
-            
-#             # 3. Clip to Image Boundaries (Important!)
-#             nx = max(0, min(nx, image_w - 1))
-#             ny = max(0, min(ny, image_h - 1))
-#             nw = max(1, min(nw, image_w - nx))
-#             nh = max(1, min(nh, image_h - ny))
-            
-#             noise_boxes.append([nx, ny, nw, nh])
-
-#     return noise_boxes
-
-
 def visualize_batch(root_path):
     print("Starting Visualization...")
     tokenizer = Pix2SeqTokenizer(num_bins=1000)
@@ -470,34 +407,7 @@ def get_pix2seq_dataloaders(root_path, batch_size=4, num_workers=2):
 
 # --- 4. Main Execution ---
 if __name__ == "__main__":
-
-    
+        
     COCO_ROOT = '/run/media/pranoy/Datasets/coco-dataset/coco/'
 
     visualize_batch(COCO_ROOT)
-
-    # if os.path.exists(COCO_ROOT):
-    #     # Unpack the 3 return values
-    #     tokenizer = Pix2SeqTokenizer(num_bins=1000)
-    #     train_loader, val_loader = get_pix2seq_dataloaders(COCO_ROOT, batch_size=2, num_workers=0)
-        
-    #     print(f"\nTrain batches: {len(train_loader)}")
-    #     print(f"Tokenizer Vocab Size: {tokenizer.vocab_size}")
-        
-    #     images, tokens = next(iter(train_loader))
-        
-    #     print(f"Images Shape: {images.shape}")
-    #     print(f"Tokens Shape: {tokens.shape}")
-    #     print(f"Max Token ID in batch: {tokens.max().item()}")
-
-
-
-
-        
-    #     # Validation Check
-    #     # Ensure max token ID is within bounds
-    #     assert tokens.max().item() < tokenizer.vocab_size, "CRITICAL: Token ID exceeds vocab size!"
-    #     print("Validation Successful: All tokens are within vocabulary range.")
-        
-    # else:
-    #     print(f"Path not found: {COCO_ROOT}")
