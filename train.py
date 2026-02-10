@@ -328,8 +328,6 @@ def train(args):
         model, optim, scheduler, train_dl, val_dl
     )
 
-    print(len(train_dl))
-
     # load models
     if args.resume:
         global_step = resume_from_checkpoint(
