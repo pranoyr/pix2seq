@@ -96,18 +96,14 @@ class Pix2SeqModel(nn.Module):
 
         self.pos_embed = PositionEmbeddingSine(num_pos_feats=decoder_dim // 2, normalize=True)
         
-        # 2. Projector
         self.projector = nn.Linear(dino_dim, decoder_dim)
         
-        # 3. Transformer Decoder
         decoder_layer = nn.TransformerDecoderLayer(d_model=decoder_dim, nhead=8, batch_first=True)
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
         
-        # 4. Embeddings
         self.token_embedding = nn.Embedding(vocab_size, decoder_dim)
         self.text_pos_embedding = nn.Embedding(max_seq_len, decoder_dim)
         
-        # 5. Output Head
         self.output_head = nn.Linear(decoder_dim, vocab_size)
 
 
@@ -116,7 +112,6 @@ class Pix2SeqModel(nn.Module):
         self.bos_token_id = tokenizer.bos_id
         self.eos_token_id = tokenizer.eos_id
         
-        # 6. Loss Function (Internal)
         # ignore_index is crucial so we don't calculate loss on padding
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.pad_token_id, reduction='none')
         
