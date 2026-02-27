@@ -254,6 +254,8 @@ def resume_from_checkpoint(device, filename, model, optim, scheduler):
 def save_ckpt(args, accelerator, model, optim, scheduler, global_step, filename):
     if not args.save_intermediate_models:
         filename = os.path.join(args.ckpt_saved_dir, f'final-model.pth')
+    else:
+        filename = os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth')
 
     checkpoint={
             'step': global_step,
