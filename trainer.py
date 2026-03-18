@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 import os
 import torch
 import torch.nn as nn
@@ -35,17 +38,13 @@ from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 @torch.no_grad()
 def sample_images(model, val_loader, tokenizer, accelerator, device, global_step, num_samples=8):
-    """
-    Samples a batch of images, generates predictions, draws GT (Green) and Pred (Red) boxes,
-    and logs them to WandB.
-    """
+
     unwrapped_model = accelerator.unwrap_model(model)
     unwrapped_model.eval()
     logging.info(f"[Step {global_step}] Sampling images for visualization...")
 
     class_names = tokenizer.class_names
 
-    # 1. Get a single batch of data (Handle Dictionary)
     try:
         batch = next(iter(val_loader))
     except StopIteration:
@@ -61,34 +60,28 @@ def sample_images(model, val_loader, tokenizer, accelerator, device, global_step
     if current_batch_size == 0:
         return
 
-    # 2. Generate Predictions (Greedy Search or Nucleus)
     generated_seqs = unwrapped_model.generate(images, max_new_tokens=100)
 
     visualizations = []
 
-    # --- PREPARE INVERSE NORMALIZATION CONSTANTS ---
-    # We move these to CPU because we pull images.cpu() inside the loop
+
     inv_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     inv_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
-    # 3. Iterate through samples to draw boxes
+
     for i in range(current_batch_size):
         img_tensor = images[i].cpu()
 
-        # --- DENORMALIZE START ---
-        # Formula: original = (normalized * std) + mean
         img_tensor = img_tensor * inv_std + inv_mean
         
-        # Clamp to [0, 1] range to avoid uint8 overflow/underflow artifacts
+      
         img_tensor = torch.clamp(img_tensor, 0, 1)
-        # --- DENORMALIZE END ---
 
         img_to_draw = (img_tensor * 255).to(torch.uint8)
         
-        # Get the VALID dimensions for correct scaling
+
         h_valid, w_valid = valid_sizes[i].tolist()
 
-        # --- A. Process Ground Truth (GREEN) ---
         gt_boxes_norm, gt_label_indices = tokenizer.decode(target_tokens[i])
         gt_boxes_abs = []
         gt_labels_str = []
@@ -111,12 +104,10 @@ def sample_images(model, val_loader, tokenizer, accelerator, device, global_step
                 colors="green", width=3, font_size=12
             )
 
-        # --- B. Process Predictions (RED) ---
         pred_boxes_norm, pred_label_indices = tokenizer.decode(generated_seqs[i])
         pred_boxes_abs = []
         pred_labels_str = []
         for box, lbl_idx in zip(pred_boxes_norm, pred_label_indices):
-            # Scale by VALID dimensions
             xb = box[0] * w_valid
             yb = box[1] * h_valid
             wb = box[2] * w_valid
@@ -158,29 +149,24 @@ def validate(model, val_loader, tokenizer, accelerator, device, global_step):
     if accelerator.is_main_process:
         print(f"\n[Step {global_step}] Starting Validation...")
     
-    # Iterate over the loader (handling dictionary)
     for batch in tqdm(val_loader, disable=not accelerator.is_main_process):
         
         images = batch["images"].to(device)
         target_tokens = batch["tokens"].to(device)
-        valid_sizes = batch["valid_sizes"] # Keep CPU or move to device if needed
+        valid_sizes = batch["valid_sizes"] 
         
-        # 1. Generate
         generated_seqs = unwrapped_model.generate(images, max_new_tokens=VAL_MAX_TOKENS)
         
         preds = []
         targets = []
         
         for i in range(images.size(0)):
-            # Get valid dimensions for this image
             h_valid, w_valid = valid_sizes[i].tolist()
             
-            # --- Process Prediction ---
             pred_boxes_norm, pred_labels = tokenizer.decode(generated_seqs[i])
             
             pred_boxes_abs = []
             for box in pred_boxes_norm:
-                # Scale by VALID dimensions
                 pb = [box[0] * w_valid, box[1] * h_valid, box[2] * w_valid, box[3] * h_valid]
                 # xywh -> xyxy
                 pb_xyxy = [pb[0], pb[1], pb[0] + pb[2], pb[1] + pb[3]]
@@ -199,12 +185,11 @@ def validate(model, val_loader, tokenizer, accelerator, device, global_step):
                     'labels': torch.tensor([], device=device)
                 })
 
-            # --- Process Ground Truth ---
+          
             gt_boxes_norm, gt_labels = tokenizer.decode(target_tokens[i])
             
             gt_boxes_abs = []
             for box in gt_boxes_norm:
-                # Scale by VALID dimensions
                 gb = [box[0] * w_valid, box[1] * h_valid, box[2] * w_valid, box[3] * h_valid]
                 gb_xyxy = [gb[0], gb[1], gb[0] + gb[2], gb[1] + gb[3]]
                 gt_boxes_abs.append(gb_xyxy)
@@ -251,11 +236,11 @@ def resume_from_checkpoint(device, filename, model, optim, scheduler):
         return global_step
 
 
-def save_ckpt(args, accelerator, model, optim, scheduler, global_step, filename):
-    if not args.save_intermediate_models:
-        filename = os.path.join(args.ckpt_saved_dir, f'final-model.pth')
+def save_ckpt(accelerator, model, optim, scheduler, global_step, filename, save_intermediate_models, ckpt_saved_dir):
+    if not save_intermediate_models:
+        filename = os.path.join(ckpt_saved_dir, f'final-model.pth')
     else:
-        filename = os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth')
+        filename = os.path.join(ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth')
 
     checkpoint={
             'step': global_step,
@@ -269,174 +254,176 @@ def save_ckpt(args, accelerator, model, optim, scheduler, global_step, filename)
 
 
 
-def train(args):
+class Pix2SeqTrainer:
+    def __init__(self, 
+                model : nn.Module,
+                tokenizer : Pix2SeqTokenizer,
+                train_dl : DataLoader,
+                val_dl: DataLoader,
+                optim : torch.optim.Optimizer,
+                scheduler : torch.optim.lr_scheduler._LRScheduler,
 
-    global_step = 0
+                num_epochs: int = 100,
+                batch_size: int = 16,
+                gradient_accumulation_steps: int = 1,
+                max_grad_norm: float = 1.0,
 
-    # setup accelerator
-    accelerator = Accelerator(
-        mixed_precision=args.mixed_precision,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        log_with="wandb")
+                ckpt_every: int = 100,
+                eval_every: int = 1000,
+                sample_every: int = 500,    
+                save_intermediate_models: bool = False,
+                ckpt_saved_dir: str = 'ckpt',
+                resume: str | None = None,
+                accelerator_kwargs: dict | None = None
 
-    accelerator.init_trackers(
-            project_name=args.project_name,
-            # add kwargs for wandb
-            init_kwargs={"wandb": {
-                "config": vars(args)
-            }}	
-    )
+                ):
 
-    # set device
-    device = accelerator.device
-    # model
-    model = Pix2SeqModel()
+        self.global_step = 0
 
-    tokenizer = Pix2SeqTokenizer(num_bins=1000)
-    
-    # Train loders
-    train_dl, val_dl = get_pix2seq_dataloaders(
-        root_path=args.root,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers
-    )
-
-
-    # training parameters
-    optim = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        betas=(0.9, 0.95),
-        weight_decay=0.05
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            log_with="wandb"
         )
 
-    steps_per_epoch = math.ceil(len(train_dl) / args.gradient_accumulation_steps)
-    num_training_steps = args.num_epochs * steps_per_epoch
-   
-    scheduler = get_cosine_schedule_with_warmup(
-            optim,
-            num_warmup_steps=args.warmup_steps,
-            num_training_steps=num_training_steps
+        self.accelerator.init_trackers(
+            **accelerator_kwargs,
         )
 
+        device = self.accelerator.device
 
-    # scheduler = None
+        self.model, self.optim, self.scheduler, self.train_dl, self.val_dl = self.accelerator.prepare(
+            model, 
+            optim, 
+            scheduler, 
+            train_dl, 
+            val_dl
+        )
 
-    # prepare model, optimizer, and dataloader for distributed training
-    model, optim, scheduler, train_dl, val_dl = accelerator.prepare(
-        model, 
-        optim, 
-        scheduler, 
-        train_dl, 
-        val_dl
-    )
-    
-    # load models
-    if args.resume:
-        global_step = resume_from_checkpoint(device, args.resume, model, optim, scheduler)
+        self.tokenizer = tokenizer
+        
+        # load models
+        if resume:
+            self.global_step = resume_from_checkpoint(device, resume, self.model, self.optim, self.scheduler)
 
-    effective_steps_per_epoch = math.ceil(len(train_dl) / args.gradient_accumulation_steps)
-    effective_training_steps = args.num_epochs * effective_steps_per_epoch
+        effective_steps_per_epoch = math.ceil(len(self.train_dl) / gradient_accumulation_steps)
+        effective_training_steps = num_epochs * effective_steps_per_epoch
 
-    logging.info(f"Effective batch size per device: {args.batch_size * args.gradient_accumulation_steps}")
-    logging.info(f"Effective steps per epoch: {effective_steps_per_epoch}")
-    logging.info(f"Effective Total training steps: {effective_training_steps}")
+        logging.info(f"Effective batch size per device: {batch_size * gradient_accumulation_steps}")
+        logging.info(f"Effective steps per epoch: {effective_steps_per_epoch}")
+        logging.info(f"Effective Total training steps: {effective_training_steps}")
 
-    start_epoch = global_step // effective_training_steps
+        self.start_epoch = self.global_step // effective_training_steps
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.max_grad_norm = max_grad_norm
+        self.ckpt_every = ckpt_every
+        self.eval_every = eval_every
+        self.sample_every = sample_every
+        self.save_intermediate_models = save_intermediate_models
+        self.ckpt_saved_dir = ckpt_saved_dir
 
-    model.train()
-    for epoch in range(start_epoch, args.num_epochs):
-        with tqdm(train_dl, dynamic_ncols=True, disable=not accelerator.is_main_process) as train_dl:
-            for (batch) in train_dl:
-                
-                images , targets = batch["images"], batch["tokens"]
-                loss_masks = batch["loss_masks"] 
 
-                images = images.to(device)
-                targets = targets.to(device)
 
-                with accelerator.accumulate(model):
+    @property
+    def device(self):
+        return self.accelerator.device
+
+    def train(self):
+        self.model.train()
+        for epoch in range(self.start_epoch, self.num_epochs):
+            with tqdm(self.train_dl, dynamic_ncols=True, disable=not self.accelerator.is_main_process) as train_dl:
+                for (batch) in train_dl:
                     
-                    optim.zero_grad(set_to_none=True)
-                    
-                    with accelerator.autocast():
-                        loss = model(images, target_tokens=targets, loss_masks=loss_masks)[0]
+                    images , targets = batch["images"], batch["tokens"]
+                    loss_masks = batch["loss_masks"] 
+
+                    images = images.to(self.device)
+                    targets = targets.to(self.device)
+
+                    with self.accelerator.accumulate(self.model):
                         
-                    accelerator.backward(loss)
-                    
-                    if accelerator.sync_gradients and args.max_grad_norm:
-                        accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                    
-                    optim.step()	
-                    if scheduler is not None:
-                        scheduler.step()
-
-            
-                # =========================
-                # LOGGING AND CHECKPOINTING
-                # =========================
-                if accelerator.sync_gradients:
-                    
-                    # Checkpointing: Only Main Process
-                    if not (global_step % args.ckpt_every):
-                        if accelerator.is_main_process:
-                            save_ckpt(args, accelerator, model, optim, scheduler, global_step,
-                                    os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-step-{global_step}.pth'))
+                        self.optim.zero_grad(set_to_none=True)
+                        
+                        with self.accelerator.autocast():
+                            loss = self.model(images, target_tokens=targets, loss_masks=loss_masks)[0]
                             
-                        accelerator.wait_for_everyone()
-                    
-                    # Sampling: Main Process Works, Everyone Waits
-                    if not (global_step % args.sample_every):
-                        # Work
-                        if accelerator.is_main_process:
-                            sample_images(
+                        self.accelerator.backward(loss)
+                        
+                        if self.accelerator.sync_gradients and self.max_grad_norm:
+                            self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                        
+                        self.optim.step()	
+                        if self.scheduler is not None:
+                            self.scheduler.step()
+
+        
+                    if self.accelerator.sync_gradients:
+                        # checkpointing
+                        if not (self.global_step % self.ckpt_every):
+                            if self.accelerator.is_main_process:
+                                save_ckpt(self.accelerator, 
+                                            model, 
+                                            self.optim,
+                                            self.scheduler,
+                                            self.global_step,
+                                            os.path.join(self.ckpt_saved_dir, f'{wandb.run.name}-step-{self.global_step}.pth'),
+                                            self.save_intermediate_models,
+                                            self.ckpt_saved_dir
+                                            )
+
+                            self.accelerator.wait_for_everyone()
+                        
+                        # sampling
+                        if not (self.global_step % self.sample_every):
+                            if self.accelerator.is_main_process:
+                                sample_images(
+                                    model,
+                                    val_dl,
+                                    tokenizer,
+                                    self.accelerator,
+                                    self.device,
+                                    self.global_step,
+                                    num_samples=10
+                                )
+                        
+                            self.accelerator.wait_for_everyone()
+
+                        # validate
+                        if not (self.global_step % self.eval_every) and self.global_step != 0:
+                            validate(
                                 model,
                                 val_dl,
                                 tokenizer,
-                                accelerator,
-                                device,
-                                global_step,
-                                num_samples=10
+                                self.accelerator,
+                                self.device,
+                                self.global_step
                             )
-                      
-                        accelerator.wait_for_everyone()
-
-                    #  Validation: Run on ALL processes
-                    if not (global_step % args.eval_every) and global_step != 0:
-                        validate(
-                            model,
-                            val_dl,
-                            tokenizer,
-                            accelerator,
-                            device,
-                            global_step
-                        )
-                        accelerator.wait_for_everyone() 
-                    
-                    #  Logging Scalars: Main Process Only
-                    if accelerator.is_main_process:
-                        log_dict = {
-                            "loss": loss.item(),
-                            "lr": optim.param_groups[0]['lr']
-                        }
-                        accelerator.log(log_dict, step=global_step)
-                    
-                    global_step += 1
+                            self.accelerator.wait_for_everyone() 
+                        
+                        # logging
+                        if self.accelerator.is_main_process:
+                            log_dict = {
+                                "loss": loss.item(),
+                                "lr": self.optim.param_groups[0]['lr']
+                            }
+                            self.accelerator.log(log_dict, step=self.global_step)
+                        
+                        self.global_step += 1
 
 
-    # save the final model
-    if accelerator.is_main_process:
-        save_ckpt(
-            accelerator,
-            model,
-            optim,
-            scheduler,
-            global_step,
-            os.path.join(args.ckpt_saved_dir, f'{wandb.run.name}-final.pth')
-        )
+        # save the final model
+        if self.accelerator.is_main_process:
+            save_ckpt(
+                self.accelerator,
+                model,
+                self.optim,
+                self.scheduler,
+                self.global_step,
+                os.path.join(self.ckpt_saved_dir, f'{wandb.run.name}-final.pth')
+            )
 
-    accelerator.end_training()        
-    print("Train finished!")
+        self.accelerator.end_training()        
+        print("Train finished!")
 
 
 if __name__ == "__main__":
@@ -446,7 +433,7 @@ if __name__ == "__main__":
 
     # project / dataset
     parser.add_argument('--project_name', type=str, default='Pix2Seq', help="WandB project name")
-    parser.add_argument('--root', type=str, default='/home/pranoy/datasets/coco',help="Path to dataset")
+    parser.add_argument('--root', type=str, default='/mnt/datasets/coco-dataset/coco',help="Path to dataset")
     parser.add_argument('--resume', type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument('--batch_size', type=int, default=16, help="Batch size per device")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of data loader workers")
@@ -456,8 +443,11 @@ if __name__ == "__main__":
     parser.add_argument('--num_epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--warmup_steps', type=int, default=2000, help="LR warmup steps")
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument('--max_grad_norm', type=float, default=1.0, help="Max gradient norm for clipping")
     parser.add_argument('--mixed_precision', type=str, default='fp16', choices=['no', 'fp16', 'bf16'], help="Mixed precision training mode")
+    parser.add_argument('--beta1', type=float, default=0.9, help="Adam beta1")
+    parser.add_argument('--beta2', type=float, default=0.95, help="Adam beta2")
+    parser.add_argument('--weight_decay', type=float, default=0.05, help="Adam weight decay")
+    parser.add_argument('--max_grad_norm', type=float, default=1.0, help="Max gradient norm for clipping")
 
 
     # logging / checkpointing
@@ -476,11 +466,70 @@ if __name__ == "__main__":
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
- 
 
-    kwargs = vars(args)
-    print("Training configuration:")
-    for k, v in kwargs.items():
-        print(f"  {k}: {v}")
+    
+    model = Pix2SeqModel()
+    tokenizer = Pix2SeqTokenizer(num_bins=1000)
+    
+    # loaders
+    train_dl, val_dl = get_pix2seq_dataloaders(
+        root_path=args.root,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers
+    )
 
-    train(args)
+    # optimizer 
+    optim = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        betas=(args.beta1, args.beta2),
+        weight_decay=args.weight_decay
+        )
+
+    steps_per_epoch = math.ceil(len(train_dl) / args.gradient_accumulation_steps)
+    num_training_steps = args.num_epochs * steps_per_epoch
+    
+    # scheduler 
+    scheduler = get_cosine_schedule_with_warmup(
+            optim,
+            num_warmup_steps=args.warmup_steps,
+            num_training_steps=num_training_steps
+        )
+    
+    training_params = {
+        "num_epochs": args.num_epochs,
+        "batch_size": args.batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "max_grad_norm": args.max_grad_norm
+    }
+
+    logging_params = {
+        "ckpt_every": args.ckpt_every,
+        "eval_every": args.eval_every,
+        "sample_every": args.sample_every,
+        "save_intermediate_models": args.save_intermediate_models,
+        "ckpt_saved_dir": args.ckpt_saved_dir,
+        "resume": args.resume,
+    }
+
+    accelerator_kwargs={
+            "project_name": args.project_name,
+            "init_kwargs": {"wandb": {"config": vars(args)}}
+        }
+
+
+    # Initialize and run Trainer
+    trainer = Pix2SeqTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dl=train_dl,
+        val_dl=val_dl,
+        optim=optim,
+        scheduler=scheduler,
+        accelerator_kwargs=accelerator_kwargs,
+        **training_params,
+        **logging_params,
+     
+    )
+
+    trainer.train()
