@@ -312,7 +312,7 @@ class Pix2SeqTrainer:
         logging.info(f"Effective steps per epoch: {effective_steps_per_epoch}")
         logging.info(f"Effective Total training steps: {effective_training_steps}")
 
-        self.start_epoch = self.global_step // effective_training_steps
+        self.start_epoch = self.global_step // effective_steps_per_epoch
         self.num_epochs = num_epochs
         self.batch_size = batch_size
         self.max_grad_norm = max_grad_norm
